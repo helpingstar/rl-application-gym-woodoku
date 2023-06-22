@@ -134,13 +134,9 @@ class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
         self.network = nn.Sequential(
-            layer_init(nn.Conv2d(1, 16, 3)),
+            layer_init(nn.Conv2d(1, 32, 5)),
             nn.ReLU(),
-            layer_init(nn.Conv2d(16, 32, 3)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, 3)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, 3)),
+            layer_init(nn.Conv2d(32, 64, 5)),
             nn.ReLU(),
             nn.Flatten(),
             layer_init(nn.Linear(64 * 7 * 7, 512)),
