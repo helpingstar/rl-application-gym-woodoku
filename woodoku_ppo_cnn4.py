@@ -138,10 +138,8 @@ class Agent(nn.Module):
             nn.ReLU(),
             layer_init(nn.Conv2d(32, 64, 5)),
             nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, 3)),
-            nn.ReLU(),
             nn.Flatten(),
-            layer_init(nn.Linear(64 * 5 * 5, 1024)),
+            layer_init(nn.Linear(64 * 7 * 7, 1024)),
             nn.ReLU(),
         )
         self.actor = layer_init(nn.Linear(1024, envs.single_action_space.n), std=0.01)
