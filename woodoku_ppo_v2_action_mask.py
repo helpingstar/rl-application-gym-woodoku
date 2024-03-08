@@ -15,8 +15,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 import gym_woodoku
 from gym_woodoku.wrappers import ObservationMode, TerminateIllegalWoodoku, RewardMode
-from gymnasium.experimental.wrappers import ReshapeObservationV0, LambdaObservationV0, DtypeObservationV0, LambdaObservationV0, LambdaRewardV0
 from tqdm import tqdm
+
 
 @dataclass
 class Args:
@@ -30,11 +30,11 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "woodoku"
+    wandb_project_name: str = "Woodoku"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
@@ -44,11 +44,11 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 32
     """the number of parallel game environments"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -81,35 +81,40 @@ class Args:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
-        
     # track interval
-    log_charts_interval: int = 500
+    log_charts_interval: int = 10000
     """Record interval for chart"""
     log_losses_interval: int = 100
     """Record interval for losses"""
-    record_interval: int = 5000
+    record_interval: int = 20000
     """Record interval for RecordVideo"""
 
     load_model: str = ""
     """whether to load model `runs/{run_name}` folder"""
 
-    # # reward 
-    # blank_reward: float = -0.01
-    # """The reward for reaching an empty space."""
-    # reward_scale: float = 1
-    # """Size of reward for dying or getting an item"""
+    # game option
+    n_channel: int = 4
+    """number of channel"""
+
+    # reward
+
 
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.wrappers.RecordVideo(
+                env, f"videos/{run_name}", episode_trigger=lambda x: (x % args.record_interval == 0)
+            )
         else:
             env = gym.make(env_id)
 
-        env = RewardMode(env, 'non_straight')
-        env = TerminateIllegalWoodoku(env, -5)
-        env = ObservationMode(env)
+        env = RewardMode(env, "woodoku")
+        env = gym.wrappers.TransformReward(env, lambda r: r * 0.01)
+        env = ObservationMode(env, n_channel=args.n_channel)
+
         env = gym.wrappers.RecordEpisodeStatistics(env)
+
         return env
 
     return thunk
@@ -121,34 +126,49 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
+class CategoricalMasked(Categorical):
+    def __init__(self, probs=None, logits=None, validate_args=None, masks=[]):
+        self.masks = masks
+        if len(self.masks) == 0:
+            super(CategoricalMasked, self).__init__(probs, logits, validate_args)
+        else:
+            self.masks = masks.type(torch.BoolTensor).to(device)
+            logits = torch.where(self.masks, logits, torch.tensor(-1e8).to(device))
+            super(CategoricalMasked, self).__init__(probs, logits, validate_args)
+
+    def entropy(self):
+        if len(self.masks) == 0:
+            return super(CategoricalMasked, self).entropy()
+        p_log_p = self.logits * self.probs
+        p_log_p = torch.where(self.masks, p_log_p, torch.tensor(0.0).to(device))
+        return -p_log_p.sum(-1)
+
+
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
         self.network = nn.Sequential(
-            layer_init(nn.Conv2d(1, 32, 3)),  # 13
+            layer_init(nn.Conv2d(args.n_channel, 32, 3, padding=1)),
             nn.ReLU(),
-            layer_init(nn.Conv2d(32, 32, 3)), # 11
+            layer_init(nn.Conv2d(32, 64, 3)),
             nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, 3)), # 9
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, 3)), # 7
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, 3)), # 5
+            layer_init(nn.Conv2d(64, 64, 3)),
             nn.ReLU(),
             nn.Flatten(),
-            layer_init(nn.Linear(64 * 5 * 5, 2048)),
+            layer_init(nn.Linear(64 * 5 * 5, 1024)),
             nn.ReLU(),
         )
-        self.actor = layer_init(nn.Linear(2048, envs.single_action_space.n), std=0.01)
-        self.critic = layer_init(nn.Linear(2048, 1), std=1)
+        self.actor = layer_init(nn.Linear(1024, envs.single_action_space.n), std=0.01)
+        self.critic = layer_init(nn.Linear(1024, 1), std=1)
 
     def get_value(self, x):
         return self.critic(self.network(x))
 
-    def get_action_and_value(self, x, action=None):
+    def get_action_and_value(self, x, action=None, invalid_action_mask=None):
         hidden = self.network(x)
         logits = self.actor(hidden)
-        probs = Categorical(logits=logits)
+        # probs = Categorical(logits=logits)
+        probs = CategoricalMasked(logits=logits, masks=invalid_action_mask)
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
@@ -171,7 +191,7 @@ if __name__ == "__main__":
             sync_tensorboard=True,
             config=vars(args),
             name=run_name,
-            monitor_gym=True,
+            # monitor_gym=True,
             save_code=True,
         )
     writer = SummaryWriter(f"runs/{run_name}")
@@ -189,14 +209,14 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
+    envs = gym.vector.AsyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
     if args.load_model:
-        agent.load_state_dict(torch.load(f'runs/{args.load_model}'))
+        agent.load_state_dict(torch.load(f"runs/gym_woodoku/{args.load_model}"))
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -206,11 +226,12 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) + (envs.single_action_space.n,)).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs, _ = envs.reset(seed=args.seed)
+    next_obs, infos = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
@@ -225,10 +246,13 @@ if __name__ == "__main__":
             global_step += args.num_envs
             obs[step] = next_obs
             dones[step] = next_done
+            invalid_action_masks[step] = torch.Tensor(infos["action_mask"]).to(device)
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                action, logprob, _, value = agent.get_action_and_value(
+                    next_obs, invalid_action_mask=invalid_action_masks[step]
+                )
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -246,7 +270,7 @@ if __name__ == "__main__":
                             # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                             writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                             writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                            writer.add_scalar("charts/snake_length", info["score"], global_step)
+                            writer.add_scalar("charts/score", info["score"], global_step)
                             charts_count = 1
                         else:
                             charts_count += 1
@@ -274,6 +298,7 @@ if __name__ == "__main__":
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
+        b_invalid_action_masks = invalid_action_masks.reshape((-1, envs.single_action_space.n))
 
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
@@ -284,7 +309,9 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                    b_obs[mb_inds], b_actions.long()[mb_inds], b_invalid_action_masks[mb_inds]
+                )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -349,7 +376,7 @@ if __name__ == "__main__":
         else:
             losses_count += 1
 
-        if iteration % (args.num_iterations // 20) == 0:
+        if iteration % (args.num_iterations // 100) == 0:
             model_path = f"runs/{run_name}/cleanrl_{args.exp_name}_{iteration}.pt"
             torch.save(agent.state_dict(), model_path)
             print(f"model saved to {model_path}")

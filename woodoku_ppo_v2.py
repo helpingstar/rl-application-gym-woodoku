@@ -44,7 +44,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 16
+    num_envs: int = 32
     """the number of parallel game environments"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
@@ -103,21 +103,18 @@ def make_env(env_id, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.wrappers.RecordVideo(
+                env, f"videos/{run_name}", episode_trigger=lambda x: (x % args.record_interval == 0)
+            )
         else:
             env = gym.make(env_id)
 
-        env = RewardMode(env, "non_straight")
-        env = TerminateIllegalWoodoku(env, -5)
+        env = RewardMode(env, "woodoku")
+        env = gym.wrappers.TransformReward(env, lambda r: r * 0.01)
+        env = TerminateIllegalWoodoku(env, 0)
         env = ObservationMode(env, n_channel=args.n_channel)
 
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        if capture_video and idx == 0:
-            env = gym.wrappers.RecordVideo(
-                env,
-                f"videos/{run_name}",
-                episode_trigger=lambda x: (x % args.record_interval == 0),
-                disable_logger=True,
-            )
 
         return env
 
@@ -176,7 +173,7 @@ if __name__ == "__main__":
             sync_tensorboard=True,
             config=vars(args),
             name=run_name,
-            monitor_gym=True,
+            # monitor_gym=True,
             save_code=True,
         )
     writer = SummaryWriter(f"runs/{run_name}")
@@ -194,7 +191,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
+    envs = gym.vector.AsyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
