@@ -13,6 +13,7 @@ tyro = "^0.7.3"
 tqdm = "^4.66.2"
 tensorboard = "^2.16.2"
 wandb = "^0.16.4"
+moviepy = "^1.0.3"
 
 
 [build-system]
