@@ -112,7 +112,7 @@ def make_env(env_id, idx, capture_video, run_name):
         env = RewardMode(env, "woodoku")
         env = gym.wrappers.TransformReward(env, lambda r: r * 0.01)
         env = ObservationMode(env, n_channel=args.n_channel)
-
+        env = AddStraight(env)
         env = gym.wrappers.RecordEpisodeStatistics(env)
 
         return env
@@ -147,16 +147,14 @@ class CategoricalMasked(Categorical):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
-        self.network = (
-            nn.Sequential(
-                layer_init(nn.Conv2d(args.n_channel, 32, 3, padding=1)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(32, 64, 3)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(64, 64, 3)),
-                nn.ReLU(),
-                nn.Flatten(),
-            ),
+        self.network = nn.Sequential(
+            layer_init(nn.Conv2d(args.n_channel, 32, 3, padding=1)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, 3)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, 3)),
+            nn.ReLU(),
+            nn.Flatten(),
         )
         self.network2 = nn.Sequential(
             layer_init(nn.Linear(64 * 5 * 5 + 1, 1024)),
@@ -167,12 +165,12 @@ class Agent(nn.Module):
 
     def pre_get(self, x, straight):
         x = self.network(x)
-        x = torch.concat([x, straight], dim=-1)
+        x = torch.concat([x, straight / 10], dim=-1)
         x = self.network2(x)
         return x
 
     def get_value(self, x, straight):
-        return self.critic(self.pre_gre(x, straight))
+        return self.critic(self.pre_get(x, straight))
 
     def get_action_and_value(self, x, straight, action=None, invalid_action_mask=None):
         hidden = self.pre_get(x, straight)
@@ -297,7 +295,7 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
+            next_value = agent.get_value(next_obs_board, next_obs_straight).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
