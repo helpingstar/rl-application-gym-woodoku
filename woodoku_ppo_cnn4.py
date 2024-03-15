@@ -104,14 +104,19 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
             ### Add Custom Wrappers [1] #######
-            env = RewardMode(env, 'non_straight')
+            env = RewardMode(env, "non_straight")
             env = TerminateIllegalWoodoku(env, -5)
             ###################################
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}", episode_trigger=lambda x: (x % args.record_interval == 0), disable_logger=True)
+            env = gym.wrappers.RecordVideo(
+                env,
+                f"videos/{run_name}",
+                episode_trigger=lambda x: (x % args.record_interval == 0),
+                disable_logger=True,
+            )
         else:
             env = gym.make(env_id)
             ### Add Custom Wrappers [1] #######
-            env = RewardMode(env, 'non_straight')
+            env = RewardMode(env, "non_straight")
             env = TerminateIllegalWoodoku(env, -5)
             ###################################
         ### Add Custom Wrappers [2] #######
@@ -198,7 +203,7 @@ if __name__ == "__main__":
     agent = Agent(envs).to(device)
 
     if args.load_model:
-        agent.load_state_dict(torch.load(f'runs/{args.load_model}'))
+        agent.load_state_dict(torch.load(f"runs/{args.load_model}"))
 
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
@@ -257,7 +262,6 @@ if __name__ == "__main__":
                 else:
                     charts_count += 1
 
-
         # bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
@@ -291,7 +295,9 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                    b_obs[mb_inds], b_actions.long()[mb_inds]
+                )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 

@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "rl-application-gym-woodoku"
+version = "0.1.0"
+description = ""
+authors = ["helpingstar <iamhelpingstar@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+gymnasium = "1.0.0a1"
+torch = "1.12.1"
+tyro = "^0.7.3"
+tqdm = "^4.66.2"
+tensorboard = "^2.16.2"
+wandb = "^0.16.4"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -14,7 +14,7 @@ from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 import gym_woodoku
-from gym_woodoku.wrappers import ObservationMode, TerminateIllegalWoodoku, RewardMode
+from gym_woodoku.wrappers import ObservationMode, TerminateIllegalWoodoku, RewardMode, AddStraight
 from tqdm import tqdm
 
 
@@ -109,7 +109,7 @@ def make_env(env_id, idx, capture_video, run_name):
         else:
             env = gym.make(env_id)
 
-        env = RewardMode(env, "non_straight")
+        env = RewardMode(env, "woodoku")
         env = gym.wrappers.TransformReward(env, lambda r: r * 0.01)
         env = ObservationMode(env, n_channel=args.n_channel)
 
@@ -147,25 +147,35 @@ class CategoricalMasked(Categorical):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
-        self.network = nn.Sequential(
-            layer_init(nn.Conv2d(args.n_channel, 32, 3, padding=1)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, 3)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, 3)),
-            nn.ReLU(),
-            nn.Flatten(),
-            layer_init(nn.Linear(64 * 5 * 5, 1024)),
+        self.network = (
+            nn.Sequential(
+                layer_init(nn.Conv2d(args.n_channel, 32, 3, padding=1)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(32, 64, 3)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(64, 64, 3)),
+                nn.ReLU(),
+                nn.Flatten(),
+            ),
+        )
+        self.network2 = nn.Sequential(
+            layer_init(nn.Linear(64 * 5 * 5 + 1, 1024)),
             nn.ReLU(),
         )
         self.actor = layer_init(nn.Linear(1024, envs.single_action_space.n), std=0.01)
         self.critic = layer_init(nn.Linear(1024, 1), std=1)
 
-    def get_value(self, x):
-        return self.critic(self.network(x))
+    def pre_get(self, x, straight):
+        x = self.network(x)
+        x = torch.concat([x, straight], dim=-1)
+        x = self.network2(x)
+        return x
 
-    def get_action_and_value(self, x, action=None, invalid_action_mask=None):
-        hidden = self.network(x)
+    def get_value(self, x, straight):
+        return self.critic(self.pre_gre(x, straight))
+
+    def get_action_and_value(self, x, straight, action=None, invalid_action_mask=None):
+        hidden = self.pre_get(x, straight)
         logits = self.actor(hidden)
         # probs = Categorical(logits=logits)
         probs = CategoricalMasked(logits=logits, masks=invalid_action_mask)
@@ -220,7 +230,10 @@ if __name__ == "__main__":
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
+    obs_board = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space["board"].shape).to(device)
+    obs_straight = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space["straight"].shape).to(
+        device
+    )
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -232,7 +245,10 @@ if __name__ == "__main__":
     global_step = 0
     start_time = time.time()
     next_obs, infos = envs.reset(seed=args.seed)
-    next_obs = torch.Tensor(next_obs).to(device)
+    next_obs_board, next_obs_straight = next_obs["board"], next_obs["straight"]
+    next_obs_board = torch.Tensor(next_obs_board).to(device)
+    next_obs_straight = torch.Tensor(next_obs_straight).to(device)
+
     next_done = torch.zeros(args.num_envs).to(device)
 
     for iteration in tqdm(range(1, args.num_iterations + 1)):
@@ -244,14 +260,15 @@ if __name__ == "__main__":
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
-            obs[step] = next_obs
+            obs_board[step] = next_obs_board
+            obs_straight[step] = next_obs_straight
             dones[step] = next_done
             invalid_action_masks[step] = torch.Tensor(infos["action_mask"]).to(device)
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(
-                    next_obs, invalid_action_mask=invalid_action_masks[step]
+                    next_obs_board, next_obs_straight, invalid_action_mask=invalid_action_masks[step]
                 )
                 values[step] = value.flatten()
             actions[step] = action
@@ -259,9 +276,12 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+            next_obs_board, next_obs_straight = next_obs["board"], next_obs["straight"]
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
+            next_obs_board = torch.Tensor(next_obs_board).to(device)
+            next_obs_straight = torch.Tensor(next_obs_straight).to(device)
+            next_done = torch.Tensor(next_done).to(device)
 
             if "episode" in infos:
                 for i, b in enumerate(infos["_episode"]):
@@ -292,7 +312,8 @@ if __name__ == "__main__":
             returns = advantages + values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
+        b_obs_board = obs_board.reshape((-1,) + envs.single_observation_space["board"].shape)
+        b_obs_straight = obs_board.reshape((-1,) + envs.single_observation_space["straight"].shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_advantages = advantages.reshape(-1)
@@ -310,7 +331,10 @@ if __name__ == "__main__":
                 mb_inds = b_inds[start:end]
 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb_inds], b_actions.long()[mb_inds], b_invalid_action_masks[mb_inds]
+                    b_obs_board[mb_inds],
+                    b_obs_straight[mb_inds],
+                    b_actions.long()[mb_inds],
+                    b_invalid_action_masks[mb_inds],
                 )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
