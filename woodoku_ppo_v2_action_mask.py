@@ -28,7 +28,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "Woodoku"
     """the wandb's project name"""
@@ -110,7 +110,7 @@ def make_env(env_id, idx, capture_video, run_name):
             env = gym.make(env_id)
 
         env = RewardMode(env, "non_straight")
-        env = gym.wrappers.TransformReward(env, lambda r: r * 0.01)
+        env = gym.wrappers.TransformReward(env, lambda r: r * 0.1)
         env = ObservationMode(env, n_channel=args.n_channel)
 
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -376,7 +376,7 @@ if __name__ == "__main__":
         else:
             losses_count += 1
 
-        if iteration % (args.num_iterations // 100) == 0:
+        if iteration % (args.num_iterations // 5) == 0:
             model_path = f"runs/{run_name}/cleanrl_{args.exp_name}_{iteration}.pt"
             torch.save(agent.state_dict(), model_path)
             print(f"model saved to {model_path}")

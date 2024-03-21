@@ -11,9 +11,9 @@ The code referenced
 * https://github.com/vwxyzjn/invalid-action-masking
 
 ![episode_length](/figure/episode_length.png)
-
-* Red: invalid_action_masking
-* Bottom blue: invalid_action_penalty
-* Top blue: Loaded the last weight of the bottom blue and trained as invalid_action_penalty
-
-**The experimental results including the game's straight will be updated soon.**
+* **Brown** : `woodoku_ppo_v2_action_mask_combo.py`
+* **Pink** : `woodoku_ppo_v2_action_mask.py`
+  * Increased the reward of **Pink** by 10x.
+* **Red**: `woodoku_ppo_v2_action_mask.py`
+* **Bottom blue**: invalid_action_penalty
+* **Top blue**: Loaded the last weight of the bottom blue and trained as invalid_action_penalty
